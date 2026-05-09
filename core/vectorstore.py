@@ -7,7 +7,7 @@ from loaders import Document
 from exceptions import VectorStoreError
 import json
 from dataclasses import asdict
-
+import os
 
 
 class FAISSVectorStore:
@@ -19,13 +19,20 @@ class FAISSVectorStore:
     """
     def __init__(self, path: str):
         self.path=path
+        os.makedirs(self.path, exist_ok=True)
 
 
     def save_index(self, index: IndexFlatL2):
-        faiss.write_index(index, f"{self.path}/index.faiss")
 
-    def load_index(self):
-        return faiss.read_index(f"{self.path}/index.faiss")
+        index_path = os.path.join(self.path, "index.faiss")
+        faiss.write_index(index, index_path)
+
+    def load_index(self):      
+        index_path = os.path.join(self.path, "index.faiss")
+
+        if not os.path.exists(index_path):
+            raise FileNotFoundError(f"Index file not found at '{index_path}'")  
+        return faiss.read_index(index_path)
 
     #Step 4: Store the embeddings
     def add_document(self, chunks: List[Document], embedder: Embedder)->IndexFlatL2:
@@ -43,8 +50,10 @@ class FAISSVectorStore:
             FAISS IndexFlatL2 index containing document embeddings.
         """
         try:
+            
+            path=os.path.join(self.path,'chunks.json')
 
-            with open(f"{self.path}/chunks.json", "w") as f:
+            with open(path, "w") as f:
                 json.dump([asdict(chunk) for chunk in chunks], f)
 
 
@@ -100,10 +109,16 @@ class FAISSVectorStore:
         try:
             if k<=0:
                 raise VectorStoreError(f"k value cannot be less than 0. ")
+            
             if not query.strip() or len(query)<=3:
                 raise VectorStoreError(f"Query cannot be empty or less than 2 characters")
             
-            with open(f'{self.path}/chunks.json','r') as f:
+            chunk_path = os.path.join(self.path, "chunks.json")
+
+            if not os.path.exists(chunk_path):
+                raise FileNotFoundError(f"The path '{chunk_path}' was not found.")
+
+            with open(chunk_path, 'r') as f:
                 chunks=json.load(f)
                 chunks = [Document(**chunk) for chunk in chunks]
             
@@ -112,6 +127,11 @@ class FAISSVectorStore:
             retrieved_chunks=[]
 
             index=self.load_index()
+
+            if query_embeddings.shape[1] != index.d:
+                raise VectorStoreError(
+                    "Query embedding dimension does not match index dimension."
+                )
 
             if index.ntotal == 0:
                 raise VectorStoreError(f"Nothing indexed.")
@@ -128,6 +148,4 @@ class FAISSVectorStore:
         except VectorStoreError:
             raise
         except Exception as e:
-            raise VectorStoreError(f"Error in retrieving chunks") from e
-        
-
+            raise VectorStoreError(f"Error in retrieving chunks {e}") from e
