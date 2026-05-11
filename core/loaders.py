@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass,field
 from exceptions import LoaderError
 import os
-
+from pathlib import Path
 
 @dataclass
 class Document:
@@ -43,20 +43,21 @@ class PDFLoader(BaseLoader):
         """
         try:
             docs=[]
-            # if path:
+            if not path.lower().endswith('.pdf'):
+                raise LoaderError(f"Use PDF file.")
             if not os.path.exists(path):
                 raise LoaderError(f"Provided path is incorrect: {path}")
             if path.lower().endswith('.pdf'):
                 document=PdfReader(path)
                 for page_num,page in enumerate(document.pages):
-                    doc=Document(content=page.extract_text() or "", metadata={'page_no':page_num,'source':path,'file_type':'PDF'})
+                    doc=Document(content=page.extract_text() or "", metadata={'page_no':page_num,'source':Path(path).name,'file_type':'PDF'})
                     docs.append(doc)
                 return docs
             else:
                 raise LoaderError(f"Provide a pdf file as input.")                   
         except Exception as e:
             raise LoaderError(
-                f"Failed to load PDF: {path}"
+                f"Failed to load PDF: {path} due to {e}"
             ) from e
         
     
@@ -83,6 +84,8 @@ class DOCXLoader(BaseLoader):
             - metadata such as source path and file type.
         """
         try:
+            if not path.lower().endswith('.docx'):
+                raise LoaderError(f"Use DOCX file.")
             if not os.path.exists(path):
                 raise LoaderError(f"Provided path is incorrect: {path}")
             if path.lower().endswith('.docx'):
@@ -102,7 +105,7 @@ class DOCXLoader(BaseLoader):
                             table_texts.append(" | ".join(cells)) 
 
                 full_text=text+"\n\n"+"\n".join(table_texts)
-                return [Document(full_text,{'source':path,'file_type':'DOCX'})]
+                return [Document(full_text,{'source':Path(path).name,'file_type':'DOCX'})]
             else:
                 raise LoaderError(f"Provide a docx file as input.")                          
         except Exception as e:

@@ -1,5 +1,5 @@
 import faiss # type: ignore
-from faiss import IndexFlatL2 # type: ignore
+from faiss import IndexFlatL2, Index # type: ignore
 import numpy as np
 from typing import List, Tuple
 from embedder import Embedder
@@ -22,7 +22,7 @@ class FAISSVectorStore:
         os.makedirs(self.path, exist_ok=True)
 
 
-    def save_index(self, index: IndexFlatL2):
+    def save_index(self, index: faiss.Index):
 
         index_path = os.path.join(self.path, "index.faiss")
         faiss.write_index(index, index_path)
@@ -35,7 +35,7 @@ class FAISSVectorStore:
         return faiss.read_index(index_path)
 
     #Step 4: Store the embeddings
-    def add_document(self, chunks: List[Document], embedder: Embedder)->IndexFlatL2:
+    def add_document(self, chunks: List[Document], embedder: Embedder)->faiss.Index:
         """
         Generate embeddings for documents and add them to a FAISS index.
 
@@ -51,10 +51,19 @@ class FAISSVectorStore:
         """
         try:
             
-            path=os.path.join(self.path,'chunks.json')
+            fname=os.path.join(self.path,'chunks.json')
 
-            with open(path, "w") as f:
-                json.dump([asdict(chunk) for chunk in chunks], f)
+            if not os.path.isfile(fname) or os.path.getsize(fname) == 0:
+                with open(fname, "w") as f:
+                    f.write(json.dumps([asdict(chunk) for chunk in chunks], indent=3))
+            else:
+                with open(fname,'r') as f:
+                    new_chunks=json.load(f)
+
+                new_chunks.extend([asdict(chunk) for chunk in chunks])
+            
+                with open(fname, "w") as f:
+                    f.write(json.dumps(new_chunks, indent=3))
 
 
             texts = [doc.content for doc in chunks]
@@ -67,7 +76,7 @@ class FAISSVectorStore:
             if embeddings.size==0:
                 raise VectorStoreError(f"Generated embeddings are empty")
             
-            index=faiss.IndexFlatL2(len(embeddings[0]))
+            index=faiss.IndexFlatIP(len(embeddings[0]))
 
             index.add(embeddings)
 
@@ -79,11 +88,11 @@ class FAISSVectorStore:
             raise
         
         except Exception as e:
-            raise VectorStoreError(f"Error in indexing chunks") from e
+            raise VectorStoreError(f"Error in indexing chunks: {e}") from e
         
 
     #Step 5: Retrieve documents
-    def retrieve_docs(self, query: str, embedder: Embedder, k = 4)->List[Tuple[Document, float]]:
+    def retrieve_docs(self, query: str, embedder: Embedder, k = 4, **kwargs)->List[Tuple[Document, float]]:
         """
         Retrieve the top-k most semantically similar documents
         for a given query using FAISS vector similarity search.
@@ -117,16 +126,20 @@ class FAISSVectorStore:
 
             if not os.path.exists(chunk_path):
                 raise FileNotFoundError(f"The path '{chunk_path}' was not found.")
+            
+            source=kwargs.get('source')
 
             with open(chunk_path, 'r') as f:
                 chunks=json.load(f)
-                chunks = [Document(**chunk) for chunk in chunks]
-            
+                # print(chunks)
+                # chunks = [Document(chunk['content'], chunk['metadata']) for chunk in chunks]
             query_embeddings=embedder.embed_document([query])
 
             retrieved_chunks=[]
 
             index=self.load_index()
+
+
 
             if query_embeddings.shape[1] != index.d:
                 raise VectorStoreError(
@@ -141,8 +154,9 @@ class FAISSVectorStore:
             for idx, dist in zip(I[0], D[0]):
                 if idx==-1:
                     continue
-                retrieved_chunks.append((chunks[idx],dist))
+                retrieved_chunks.append((Document(chunks[idx]['content'], chunks[idx]['metadata']),dist))
 
+            print(retrieved_chunks)
             return retrieved_chunks 
         
         except VectorStoreError:

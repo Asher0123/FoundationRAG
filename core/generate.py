@@ -1,7 +1,7 @@
 from langchain_aws import ChatBedrockConverse
 import os
 from typing import List,Optional, Tuple
-from langfuse import LangfuseSpan
+from langfuse import Langfuse
 from dotenv.main import set_key, load_dotenv, find_dotenv
 from loaders import Document
 from exceptions import GenerationError
@@ -21,7 +21,7 @@ class Generator:
                                 aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
                                 aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"))
 
-    def generate_answer(self,query: str, retrieved_chunks: List[Tuple[Document, float]], trace:Optional[LangfuseSpan]=None):
+    def generate_answer(self,query: str, retrieved_chunks: List[Tuple[Document, float]], langfuse: Langfuse):
         """
         Generate an answer for a query using retrieved documents.
 
@@ -60,19 +60,22 @@ class Generator:
             if not hasattr(self.model, "invoke"):
                 raise GenerationError("Missing invoke method")
             
-            if trace:
-                span = trace.span(
-                name="generation",
-                input={"prompt": prompt}
-            )
-                print("Generating answer")
-
+            with langfuse.start_as_current_observation(name="Generation",as_type='generation', input=   {"prompt":prompt}) as generation:
                 response=self.model.invoke(prompt)
-                span.end(output={"response": str(response.content)})
-                return response.content
+                generation.update(output={
+                                        "response": response.content
+                                    },
+                                    usage={
+                                        "input": response.usage_metadata["input_tokens"],
+                                        "output": response.usage_metadata["output_tokens"],
+                                        "total": response.usage_metadata["total_tokens"]
+                                    }
+                                )
+            langfuse.flush()
+            return response
             
-            response=self.model.invoke(prompt)
-            return response.content
+            # response=self.model.invoke(prompt)
+            # return response
         except GenerationError:
             raise
         except Exception as e:
