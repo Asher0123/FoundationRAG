@@ -21,18 +21,21 @@ class FAISSVectorStore:
         self.path=path
         os.makedirs(self.path, exist_ok=True)
 
+        self.index_path = os.path.join(self.path, "index.faiss")
+        self.chunk_path = os.path.join(self.path, "chunks.json")
+
 
     def save_index(self, index: faiss.Index):
-        index_path = os.path.join(self.path, "index.faiss")
-        faiss.write_index(index, index_path)
+        # index_path = os.path.join(self.path, "index.faiss")
+        faiss.write_index(index, self.index_path)
 
 
     def load_index(self):      
-        index_path = os.path.join(self.path, "index.faiss")
+        # index_path = os.path.join(self.path, "index.faiss")
 
-        if not os.path.exists(index_path):
-            raise FileNotFoundError(f"Index file not found at '{index_path}'")  
-        return faiss.read_index(index_path)
+        if not os.path.exists(self.index_path):
+            raise FileNotFoundError(f"Index file not found at '{self.index_path}'")  
+        return faiss.read_index(self.index_path)
 
     #Step 4: Store the embeddings
     def add_document(self, chunks: List[Document], embedder: Embedder)->faiss.Index:
@@ -51,7 +54,8 @@ class FAISSVectorStore:
         """
         try:
             # Fix for chunks.json getting overwritten with every ingestion. Now new chunks will be added not overwritten.
-            fname=os.path.join(self.path,'chunks.json')
+            # fname=os.path.join(self.path,'chunks.json')
+            fname=self.chunk_path
 
             if not os.path.isfile(fname) or os.path.getsize(fname) == 0:
                 with open(fname, "w") as f:
@@ -60,10 +64,15 @@ class FAISSVectorStore:
                 with open(fname,'r') as f:
                     new_chunks=json.load(f)
 
+                existing_chunk_count = len(new_chunks)
+
+                # for chunk in chunks:
+                #    chunk.metadata['chunk_id']=existing_chunk_count+1
+
                 new_chunks.extend([asdict(chunk) for chunk in chunks])
-            
+        
                 with open(fname, "w") as f:
-                    f.write(json.dumps(new_chunks, indent=3))
+                    f.write(json.dumps(new_chunks, indent=3))   
 
 
             texts = [doc.content for doc in chunks]
@@ -71,12 +80,23 @@ class FAISSVectorStore:
             if not any(text.strip() for text in texts):
                 raise VectorStoreError(f"No text in the chunks")
 
-            embeddings=embedder.embed_document(texts)
+            embeddings=embedder.embed_document(texts).astype('float32')
+
+            faiss.normalize_L2(embeddings)
 
             if embeddings.size==0:
                 raise VectorStoreError(f"Generated embeddings are empty")
             
-            index=faiss.IndexFlatIP(len(embeddings[0]))
+            index_path = os.path.join(self.path,'index.faiss')
+
+            if os.path.exists(self.index_path):
+                index=self.load_index()
+
+                if index.d!=len(embeddings[0]):
+                    raise VectorStoreError("Embeddings dimension mismatch with existing index.")
+            
+            else:
+                index=faiss.IndexFlatIP(len(embeddings[0]))
 
             index.add(embeddings)
 
@@ -122,23 +142,30 @@ class FAISSVectorStore:
             if not query.strip() or len(query)<=3:
                 raise VectorStoreError(f"Query cannot be empty or less than 2 characters")
             
-            chunk_path = os.path.join(self.path, "chunks.json")
+            # chunk_path = os.path.join(self.path, "chunks.json")
 
-            if not os.path.exists(chunk_path):
-                raise FileNotFoundError(f"The path '{chunk_path}' was not found.")
+            if not os.path.exists(self.chunk_path):
+                raise FileNotFoundError(f"The path '{self.chunk_path}' was not found.")
             
             source=kwargs.get('source')
 
-            with open(chunk_path, 'r') as f:
+            with open(self.chunk_path, 'r') as f:
                 chunks=json.load(f)
-                # print(chunks)
-                # chunks = [Document(chunk['content'], chunk['metadata']) for chunk in chunks]
-            query_embeddings=embedder.embed_document([query])
+
+            query_embeddings=embedder.embed_document([query]).astype('float32')
+
+            faiss.normalize_L2(query_embeddings)
 
             retrieved_chunks=[]
 
             index=self.load_index()
 
+            if index.ntotal != len(chunks):
+                raise VectorStoreError(
+                    f"Index/chunk mismatch. "
+                    f"Index has {index.ntotal} vectors "
+                    f"but chunks.json has {len(chunks)} chunks."
+                )
 
 
             if query_embeddings.shape[1] != index.d:
@@ -154,6 +181,7 @@ class FAISSVectorStore:
             for idx, dist in zip(I[0], D[0]):
                 if idx==-1:
                     continue
+                print(idx)
                 retrieved_chunks.append((Document(chunks[idx]['content'], chunks[idx]['metadata']),dist))
 
             print(retrieved_chunks)

@@ -1,4 +1,4 @@
-from loaders import PDFLoader, DOCXLoader
+from loaders import Loader
 from splitter import FixedCharacterSplitter, SentenceSplitter
 from embedder import Embedder
 from vectorstore import FAISSVectorStore
@@ -28,10 +28,10 @@ class RAG:
         vectorstore=None,
         generator=None,
     ):
-        self.loader = loader or PDFLoader()
+        self.loader = loader or Loader()
         self.splitter = splitter or SentenceSplitter()
         self.embedder = embedder or Embedder()
-        self.vectorstore = vectorstore or FAISSVectorStore('.')
+        self.vectorstore = vectorstore or FAISSVectorStore('..\\vectorstore')
         self.generator = generator or Generator()
 
     def get_metric_type(self, metric: int) -> str: # Tells which type of search is used for FAISS
@@ -77,7 +77,7 @@ class RAG:
         if not os.path.exists(doc_path):
             raise FileNotFoundError(f"The path '{doc_path}' was not found.")
         
-        document=self.loader.load_document(doc_path)
+        document=self.loader.load(doc_path)
 
         chunks=self.splitter.split(document)
 
@@ -85,49 +85,61 @@ class RAG:
         self.save(index)
 
 
-    def query(self, query: str, k: int = 4):
+    def query(self, query: str, k: int = 4,observe=True):
+        try:
+            if not query.strip():
+                raise Exception 
 
-        with langfuse.start_as_current_observation(name="QnA",input={"query":query}) as trace:
+            if observe:
+                with langfuse.start_as_current_observation(name="QnA",input={"query":query}) as trace:
+                
+                    retrieved_chunks=self.vectorstore.retrieve_docs(query=query, embedder=self.embedder, k=k)
 
-            # trace=langfuse.current_observation(name="QnA",input={"query":query})
-        
+                    with langfuse.start_as_current_observation(name="Retrieval",input={"query":query}) as retrieval_span:
+
+                        formatted_chunks = [{
+                                                "content": chunk.content,
+                                                "metadata": chunk.metadata,
+                                                "score": score
+                                            }
+                                            for chunk, score in retrieved_chunks
+        ]
+
+                        retrieval_span.update(output={"retrieved_chunks": formatted_chunks})
+                        
+                    response=self.generator.generate_answer(query,retrieved_chunks, langfuse)
+
+                    usage=getattr(response,"usage_metadata",{})
+
+                    trace.update(output={"response": str(response.content)},metadata={
+                                        "input": usage.get("input_tokens"),
+                                        "output": usage.get("output_tokens"),
+                                        "total": usage.get("total_tokens")})
+                    
+                langfuse.flush()
+                return response.content
+            
             retrieved_chunks=self.vectorstore.retrieve_docs(query=query, embedder= self.embedder, k=k)
 
-            with langfuse.start_as_current_observation(name="Retrieval",input={"query":query}) as retrieval_span:
+            response=self.generator.generate_answer(query,retrieved_chunks)
 
-                # chunks=[chunk for chunk,_ in retrieved_chunks]
-                formatted_chunks = [{
-                                        "content": chunk.content,
-                                        "metadata": chunk.metadata,
-                                        "score": score
-                                    }
-                                    for chunk, score in retrieved_chunks
-]
-
-                retrieval_span.update(
-                        output={"retrieved_chunks": formatted_chunks}
-                    )
-                
-            response=self.generator.generate_answer(query,retrieved_chunks, langfuse)
-
-            trace.update(output={"response": str(response.content)},metadata={'input_tokens':response.usage_metadata['input_tokens'],
-                                                                        'output_tokens':response.usage_metadata['output_tokens']})
-            
-        langfuse.flush()
-        return response
+            return response.content
         
+        except Exception as e:
+            logging.error(f"Error {e}")
+            raise
+            
 
 
 if __name__=="__main__":
 
-    rag=RAG(DOCXLoader(), SentenceSplitter())
+    rag=RAG(splitter=SentenceSplitter())
 
     # rag.ingest("C:\\Path\\file.pdf")
     # rag.ingest("C:\\ Path")
     print("Doc ingested")
     
     query = "Why does the candidate want to work in Bending Spoons?"
-
     
     response=rag.query(query,k=1)
 

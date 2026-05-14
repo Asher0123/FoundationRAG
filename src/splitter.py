@@ -1,8 +1,10 @@
 from abc import ABC, abstractmethod
-from typing import Optional,List
+from typing import List
 from loaders import Document
 import hashlib
 from exceptions import SplitterError
+import re
+
 
 class Splitter(ABC):
 
@@ -23,38 +25,42 @@ class FixedCharacterSplitter(Splitter):
     Returns:
         List of chunked Document objects with metadata.
     """
-    def __init__(self,chunk_size: int = 1000,chunk_overlap: int = 200) -> None:
-        self.chunk_size= chunk_size
-        self.chunk_overlap= chunk_overlap
+    def __init__(self, chunk_size: int = 1000, chunk_overlap: int = 200) -> None:
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
 
-    def split(self, document: List[Document], **kwargs)->List[Document]:
-        """Provide chunk size = x and chunk overlap = y"""
-        chunk_size = kwargs.get("chunk_size", 500)
-        chunk_overlap = kwargs.get("chunk_overlap", 100)
-        if self.chunk_overlap>=self.chunk_size:
+    def split(self, document: List[Document], **kwargs) -> List[Document]:
+
+        if self.chunk_overlap >= self.chunk_size:
             raise SplitterError("Chunk overlap cannot be greater than or equal to chunk size")
-        
+
         if not document:
             raise SplitterError("Empty document")
-        chunks=[]
+
         try:
+            chunks = []
+            step = self.chunk_size - self.chunk_overlap
             for doc in document:
-                for idx,start in enumerate(range(0,len(doc.content),self.chunk_size - self.chunk_overlap)):
-                    end=min(start+self.chunk_size, len(doc.content))
-                    chunk_text=doc.content[start:end]
+                for idx, start in enumerate(range(0, len(doc.content), step)):
+                    end = min(start + self.chunk_size, len(doc.content))
+                    chunk_text = doc.content[start:end].strip()
+
                     if not chunk_text:
                         continue
+
                     metadata = doc.metadata.copy()
-                    metadata["chunk_id"]=idx
-                    metadata['chunk_checksum']=hashlib.md5(chunk_text.encode()).hexdigest()
-                    # metadata["chunk_size"]=len(chunk_text)
-                    chunk=Document(chunk_text,metadata)
-                    chunks.append(chunk)
+                    metadata["chunk_id"] = idx
+                    metadata["chunk_checksum"] = hashlib.md5(chunk_text.encode()).hexdigest()
+
+                    chunks.append(Document(chunk_text, metadata))
+
             return chunks
+
         except SplitterError:
             raise
+
         except Exception as e:
-            raise SplitterError(f"Error in splitting") from e            
+            raise SplitterError(f"Error in splitting: {e}") from e
 
 
 class SentenceSplitter(Splitter):
@@ -66,87 +72,138 @@ class SentenceSplitter(Splitter):
         chunk_overlap = 200
 
     """
-    def __init__(self,chunk_size: int = 1000,chunk_overlap: int = 200) -> None:
-        self.chunk_size= chunk_size
-        self.chunk_overlap= chunk_overlap
+    def __init__(self, chunk_size: int = 1000, chunk_overlap: int = 200) -> None:
 
-    def split(self, document: List[Document], **kwargs)->List[Document]:
-        """    
-        Args:
-            document: List of Document objects.
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
 
-        Returns:
-            List of chunked Document objects with metadata."""
-        #Create chunks(Sentence based chunking)
+    def split(self, document: List[Document], **kwargs) -> List[Document]:
 
-        chunk_size = kwargs.get("chunk_size", 500)
-        chunk_overlap = kwargs.get("chunk_overlap", 100)
-
-        if self.chunk_overlap>=self.chunk_size:
-            raise SplitterError("Chunk overlap cannot be greater than chunk size")
+        if self.chunk_overlap >= self.chunk_size:
+            raise SplitterError("Chunk overlap cannot be greater than or equal to chunk size")
 
         if not document:
             raise SplitterError("Empty document")
 
         chunks = []
         try:
-            for doc in document: 
-                sentences = doc.content.split('.')
+            idx = 0
+            for doc in document:
+                sentences = re.split(r'(?<=[.!?])\s+', doc.content)
 
                 current_chunk = []
                 current_length = 0
-                idx=0
 
                 for sentence in sentences:
-                    metadata = doc.metadata.copy()  
+
                     sentence = sentence.strip()
+
                     if not sentence:
                         continue
-                    
+
                     sentence_length = len(sentence)
 
-                    if current_length + sentence_length <= self.chunk_size:
+                    # Handle oversized sentence
+                    if sentence_length > self.chunk_size:
+
+                        # Flush existing chunk first
+                        if current_chunk:
+
+                            chunk_text = " ".join(current_chunk).strip()
+
+                            if chunk_text:
+
+                                metadata = doc.metadata.copy()
+                                metadata["chunk_id"] = idx
+                                metadata["chunk_checksum"] = hashlib.md5(chunk_text.encode()).hexdigest()
+
+                                chunks.append(Document(chunk_text, metadata))
+                            idx+=1
+
+                            current_chunk = []
+                            current_length = 0
+
+                        # Split oversized sentence manually
+                        step = self.chunk_size - self.chunk_overlap
+
+                        for start in range(0, sentence_length, step):
+                            end = min(start + self.chunk_size, sentence_length)
+                            chunk_text = sentence[start:end].strip()
+
+                            if not chunk_text:
+                                continue
+
+                            metadata = doc.metadata.copy()
+                            metadata["chunk_id"] = idx
+                            metadata["chunk_checksum"] = hashlib.md5(chunk_text.encode() ).hexdigest()
+
+                            chunks.append(Document(chunk_text, metadata))
+                            idx += 1
+
+                        continue
+
+                    # Account for joining space
+                    additional_length = (sentence_length if not current_chunk else sentence_length + 1)
+
+                    # Add sentence if within limit
+                    if current_length + additional_length <= self.chunk_size:
+
                         current_chunk.append(sentence)
-                        current_length += sentence_length
+                        current_length += additional_length
+
                     else:
-                        chunk_text='. '.join(current_chunk) + '.'
-                        if not chunk_text.strip():
-                            continue
-                        metadata["chunk_id"]=idx
-                        metadata['chunk_checksum']=hashlib.md5(chunk_text.encode()).hexdigest()
-                        # Save chunk
-                        chunks.append(Document(chunk_text, metadata))
 
-                        idx += 1
+                        # Save current chunk
+                        chunk_text = " ".join(current_chunk).strip()
 
-                        # Start new chunk with overlap
+                        if chunk_text:
+
+                            metadata = doc.metadata.copy()
+                            metadata["chunk_id"] = idx
+                            metadata["chunk_checksum"] = hashlib.md5(chunk_text.encode()).hexdigest()
+                            chunks.append(Document(chunk_text, metadata))
+                            idx += 1
+
+                        # Create overlap
                         overlap_chunk = []
                         overlap_length = 0
 
-                        # Add last sentences until overlap satisfied
                         for s in reversed(current_chunk):
-                            if overlap_length + len(s) <= self.chunk_overlap:
+                            s_length = len(s)
+                            additional_overlap = (s_length if not overlap_chunk else s_length + 1)
+
+                            if (
+                                overlap_length + additional_overlap
+                                <= self.chunk_overlap
+                            ):
+
                                 overlap_chunk.insert(0, s)
-                                overlap_length += len(s)
+                                overlap_length += additional_overlap
+
                             else:
                                 break
 
+                        # Start new chunk
                         current_chunk = overlap_chunk + [sentence]
-                        current_length = sum(len(s) for s in current_chunk)
 
-                # Add last chunk
+                        current_length = sum(len(s) for s in current_chunk) + max(len(current_chunk) - 1, 0)
+
+                # Add remaining chunk
                 if current_chunk:
-                    metadata=doc.metadata.copy()
-                    chunk_text='. '.join(current_chunk) + '.'
-                    if not chunk_text.strip():
-                        continue
-                    metadata["chunk_id"]=idx+1
-                    metadata['chunk_checksum']=hashlib.md5(chunk_text.encode()).hexdigest()
-                    
-                    chunks.append(Document(chunk_text, metadata))
+
+                    chunk_text = " ".join(current_chunk).strip()
+
+                    if chunk_text:
+                        metadata = doc.metadata.copy()
+                        metadata["chunk_id"] = idx
+                        metadata["chunk_checksum"] = hashlib.md5(chunk_text.encode()).hexdigest()
+
+                        chunks.append(Document(chunk_text, metadata))
+
+                        idx+=1
 
             return chunks
         except SplitterError:
             raise
         except Exception as e:
-            raise SplitterError(f"Error in splitting") from e
+            raise SplitterError(f"Error while splitting document: {e}") from e

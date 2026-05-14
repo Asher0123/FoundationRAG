@@ -6,6 +6,8 @@ from dataclasses import dataclass,field
 from exceptions import LoaderError
 import os
 from pathlib import Path
+import logging
+
 
 @dataclass
 class Document:
@@ -44,17 +46,15 @@ class PDFLoader(BaseLoader):
         try:
             docs=[]
             if not path.lower().endswith('.pdf'):
-                raise LoaderError(f"Use PDF file.")
+                raise LoaderError(f"Provide a pdf file as input.")
             if not os.path.exists(path):
                 raise LoaderError(f"Provided path is incorrect: {path}")
-            if path.lower().endswith('.pdf'):
-                document=PdfReader(path)
-                for page_num,page in enumerate(document.pages):
-                    doc=Document(content=page.extract_text() or "", metadata={'page_no':page_num,'source':Path(path).name,'file_type':'PDF'})
-                    docs.append(doc)
-                return docs
-            else:
-                raise LoaderError(f"Provide a pdf file as input.")                   
+            document=PdfReader(path)
+            for page_num,page in enumerate(document.pages):
+                doc=Document(content=page.extract_text() or "", metadata={'page_no':page_num+1,'source':Path(path).name,'file_type':'PDF'})
+                docs.append(doc)
+            return docs
+     
         except Exception as e:
             raise LoaderError(
                 f"Failed to load PDF: {path} due to error: {e}"
@@ -109,6 +109,26 @@ class DOCXLoader(BaseLoader):
             else:
                 raise LoaderError(f"Provide a docx file as input.")                          
         except Exception as e:
+                raise LoaderError(
+                    f"Failed to load DOCX: {path} due to error: {e}"
+                ) from e    
+        
+LOADERS = {
+    ".pdf": PDFLoader,
+    ".docx": DOCXLoader
+}
+
+
+class Loader:
+    """Dynmically identify file type and load the document."""
+    def load(self, path: str) -> List[Document]:
+        extension = Path(path).suffix.lower()
+        loader_class=LOADERS.get(extension)
+        if not loader_class:
             raise LoaderError(
-                f"Failed to load DOCX: {path}"
-            ) from e        
+                f"Unsupported file format: {extension}"
+            )
+        
+        logging.info(f"Using {loader_class.__name__}")
+        loader=loader_class()
+        return loader.load_document(path)

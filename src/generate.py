@@ -21,7 +21,7 @@ class Generator:
                                 aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
                                 aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"))
 
-    def generate_answer(self,query: str, retrieved_chunks: List[Tuple[Document, float]], langfuse: Langfuse):
+    def generate_answer(self,query: str, retrieved_chunks: List[Tuple[Document, float]], langfuse: Optional[Langfuse]=None):
         """
         Generate an answer for a query using retrieved documents.
 
@@ -60,22 +60,27 @@ class Generator:
             if not hasattr(self.model, "invoke"):
                 raise GenerationError("Missing invoke method")
             
-            with langfuse.start_as_current_observation(name="Generation",as_type='generation', input=   {"prompt":prompt}) as generation:
-                response=self.model.invoke(prompt)
-                generation.update(output={
-                                        "response": response.content
-                                    },
-                                    usage={
-                                        "input": response.usage_metadata["input_tokens"],
-                                        "output": response.usage_metadata["output_tokens"],
-                                        "total": response.usage_metadata["total_tokens"]
-                                    }
-                                )
-            langfuse.flush()
-            return response
+            if langfuse:
             
-            # response=self.model.invoke(prompt)
-            # return response
+                with langfuse.start_as_current_observation(name="Generation",as_type='generation', input=   {"prompt":prompt}) as generation:
+                    response=self.model.invoke(prompt)
+
+                    usage=getattr(response,"usage_metadata",{})
+
+                    generation.update(output={
+                                            "response": response.content
+                                        },
+                                        usage_details={
+                                                   "input": usage.get("input_tokens"),
+                                                    "output": usage.get("output_tokens"),
+                                                    "total": usage.get("total_tokens")
+                                        }
+                                    )
+                langfuse.flush()
+                return response
+            
+            response=self.model.invoke(prompt)
+            return response
         except GenerationError:
             raise
         except Exception as e:
