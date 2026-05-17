@@ -8,7 +8,7 @@ from exceptions import VectorStoreError
 import json
 from dataclasses import asdict
 import os
-
+import logging
 
 class FAISSVectorStore:
     """
@@ -55,30 +55,32 @@ class FAISSVectorStore:
         try:
             # Fix for chunks.json getting overwritten with every ingestion. Now new chunks will be added not overwritten.
             # fname=os.path.join(self.path,'chunks.json')
+            chunks_to_embed=[]
             fname=self.chunk_path
 
             if not os.path.isfile(fname) or os.path.getsize(fname) == 0:
+                chunks_to_embed=chunks
                 with open(fname, "w") as f:
                     f.write(json.dumps([asdict(chunk) for chunk in chunks], indent=3))
+                    
             else:
                 with open(fname,'r') as f:
-                    new_chunks=json.load(f)
+                    existing_chunks=json.load(f)
+                checksums={chunk['metadata']['chunk_checksum'] for chunk in existing_chunks}
 
-                existing_chunk_count = len(new_chunks)
+                chunks_to_be_added=[chunk for chunk in chunks if chunk.metadata['chunk_checksum'] not in checksums]
 
-                # for chunk in chunks:
-                #    chunk.metadata['chunk_id']=existing_chunk_count+1
-
-                new_chunks.extend([asdict(chunk) for chunk in chunks])
-        
+                existing_chunks.extend([asdict(chunk) for chunk in chunks_to_be_added])
+                chunks_to_embed=chunks_to_be_added
                 with open(fname, "w") as f:
-                    f.write(json.dumps(new_chunks, indent=3))   
+                    json.dump(existing_chunks, f, indent=3)
 
-
-            texts = [doc.content for doc in chunks]
-
-            if not any(text.strip() for text in texts):
-                raise VectorStoreError(f"No text in the chunks")
+                if not chunks_to_be_added:
+                    logging.warning('All chunks have already been ingested.')
+                    index = self.load_index()
+                    return index
+            
+            texts = [doc.content for doc in chunks_to_embed]
 
             embeddings=embedder.embed_document(texts).astype('float32')
 
@@ -86,8 +88,6 @@ class FAISSVectorStore:
 
             if embeddings.size==0:
                 raise VectorStoreError(f"Generated embeddings are empty")
-            
-            index_path = os.path.join(self.path,'index.faiss')
 
             if os.path.exists(self.index_path):
                 index=self.load_index()
@@ -101,7 +101,6 @@ class FAISSVectorStore:
             index.add(embeddings)
 
             self.save_index(index)
-
             return index
         
         except VectorStoreError:
